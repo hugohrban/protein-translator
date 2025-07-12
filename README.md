@@ -4,6 +4,8 @@
 
 **Ever wanted to translate a protein into an ancient alphabet of 10 amino acids, while keeping the same structure? No? Well, now you can!**
 
+![ancestranslator logo](assets/logo.png)
+
 ## Usage
 
 stay tuned...
