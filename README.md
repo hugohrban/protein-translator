@@ -1,4 +1,4 @@
-# Protein Translator
+# Protein Translator 🧬🧩 📃➡️📜
 
 *Presented as a poster at ISMB/ECCB 2025 in Liverpool. See poster [here](poster.pdf).*
 
