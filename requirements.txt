@@ -1,0 +1,3 @@
+biopython==1.83
+torch==2.4.1
+transformers==4.45.1
