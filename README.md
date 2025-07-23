@@ -2,7 +2,7 @@
 
 **Ever wanted to translate a protein into an _ancient_ alphabet of 10 amino acids, while keeping the _same structure_? No? Well, now you can!**
 
-_Presented as a poster at ISMB/ECCB 2025. See poster [here](assets/poster.pdf)._
+_Presented as a poster at ISMB/ECCB 2025. See the poster PDF and a visualization of the translation process [here](https://www.ms.mff.cuni.cz/~hrbanh/eccb2025/)._
 
 ## Usage
 
