@@ -1,4 +1,4 @@
-# Protein Translator 🧬🧩 📃➡📜
+# Protein Translator 📃➡📜
 
 **Ever wanted to translate a protein into an _ancient_ alphabet of 10 amino acids, while keeping the _same structure_? No? Well, now you can!**
 
@@ -29,6 +29,8 @@ done
 
 ### Download Data
 
+_This step is optional, you can run the translation directly from any FASTA and MMCIF files._
+
 Download file(s) from the PDB (FASTA and MMCIF):
 
 ```bash
@@ -37,7 +39,7 @@ python3 download_pdb.py 1fe4 6c2u # ... or any other PDB IDs
 
 ### Run the Translator
 
-Example: running the translator using Clustering + Beam Search.
+Example: running the translator using Clustering + Beam Search algo.
 
 ```bash
 python3 -u translate.py \
@@ -52,7 +54,7 @@ python3 -u translate.py \
     --translations 5 \
     --distance_threshold 7 \
     --clustering_proportion 0.6 \
-    --dmap_reference cb \
+    --dmap_reference cb
 ```
 
-Run `translate.py --help` to see all options and explanations.
+Run `python3 translate.py --help` to see all options and explanations.
