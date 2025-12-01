@@ -10,6 +10,8 @@ from Bio.PDB import MMCIFParser, PDBParser
 from constants import ALL_AA, EARLY_AA, LATE_AA, THREE_TO_ONE_AA, DB_PATH
 from transformers.models.esm.openfold_utils import atom14_to_atom37, OFProtein, to_pdb
 from time import sleep
+import subprocess
+from datetime import datetime
 
 
 def get_num_early_aa(seq: str) -> int:
@@ -322,26 +324,29 @@ def get_tmp_dir_name(args: argparse.Namespace) -> str:
     return tmp_dir
 
 
-def compute_tm_score(reference_str: str, design_path: str) -> float:
+def compute_tm_score(reference: str, design_path: str) -> float:
     """
     Compute TM-score between two protein structures using TMscore.
 
     Args:
-        reference_str (str): String content of the reference structure file
+        reference (str): String content of the reference structure file or a structure file path
         design_path (str): Path to the design structure file
 
     Returns:
         float: TM-score between the two structures
     """
-    import subprocess
 
-    from datetime import datetime
-
-    current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("temp_refs", exist_ok=True)
-    reference_path = f"temp_refs/ref_{current_timestamp}.pdb"
-    with open(reference_path, "w") as f:
-        f.write(reference_str)
+    # if the reference is a pdb file content string, write it to a temporary file
+    is_temporary_reference = False
+    if not os.path.exists(reference):
+        is_temporary_reference = True
+        current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("temp_refs", exist_ok=True)
+        reference_path = f"temp_refs/ref_{current_timestamp}.pdb"
+        with open(reference_path, "w") as f:
+            f.write(reference)
+    else:
+        reference_path = reference
 
     try:
         result = subprocess.run(
@@ -350,7 +355,8 @@ def compute_tm_score(reference_str: str, design_path: str) -> float:
             text=True,
             check=True,
         )
-        os.remove(reference_path)  # Clean up temporary reference file
+        if is_temporary_reference and os.path.exists(reference_path):
+            os.remove(reference_path)
 
         # Parse the output to extract TM-score
         output_lines = result.stdout.split("\n")
@@ -360,7 +366,9 @@ def compute_tm_score(reference_str: str, design_path: str) -> float:
                 tm_score_str = line.split()[1].strip()
                 return float(tm_score_str)
 
-        raise ValueError("TM-score not found in TMalign output")
+        raise ValueError(
+            "TM-score not found in TMalign output: " + "\n".join(output_lines)
+        )
 
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"TMalign command failed: {e.stderr}")
@@ -407,21 +415,46 @@ class Design:
         Returns:
             bool: True if all validations pass, False otherwise.
         """
-        conditions = [
-            all(getattr(self, field) is not None for field in self.__annotations__),
-            self.optimization_reference in {"pdb", "esm"},
-            self.clustering_reference in {"cb", "com"},
-            self.precision in {"bf16", "fp32"},
-            0.0 <= self.clustering_proportion <= 1.0,
-            self.distance_threshold >= 0,
-            self.plddt_scaling_factor >= 0,
-            all(aa in EARLY_AA for aa in self.sequence),
-            0.0 <= self.plddt <= 1.0,
-            self.rmsd >= 0,
-            1.0 >= self.tm_score >= 0,
+        condition_descriptions = [
+            (
+                "All fields are not None",
+                all(getattr(self, field) is not None for field in self.__annotations__),
+            ),
+            (
+                "optimization_reference in {'pdb', 'esm'}",
+                self.optimization_reference in {"pdb", "esm"},
+            ),
+            (
+                "clustering_reference in {'cb', 'com'}",
+                self.clustering_reference in {"cb", "com"},
+            ),
+            ("precision in {'bf16', 'fp32'}", self.precision in {"bf16", "fp32"}),
+            (
+                "clustering_proportion between 0.0 and 1.0",
+                0.0 <= self.clustering_proportion <= 1.0,
+            ),
+            ("distance_threshold >= 0", self.distance_threshold >= 0),
+            ("plddt_scaling_factor >= 0", self.plddt_scaling_factor >= 0),
+            (
+                "sequence contains only EARLY_AA",
+                all(aa in EARLY_AA for aa in self.sequence),
+            ),
+            ("plddt between 0.0 and 1.0", 0.0 <= self.plddt <= 1.0),
+            ("rmsd >= 0", self.rmsd >= 0),
+            ("tm_score between 0 and 1.0", 1.0 >= self.tm_score >= 0),
         ]
-        # TODO printing which one failed
-        return all(conditions)
+
+        failed_conditions = [
+            desc for desc, condition in condition_descriptions if not condition
+        ]
+
+        if failed_conditions:
+            print(f"Validation failed for design {self.design_id}:")
+            for failed in failed_conditions:
+                print(f"  - {failed}")
+            return False
+
+        return True
 
     def save(self) -> None:
         write_design_to_db(self)
@@ -443,15 +476,15 @@ def write_design_to_db(design: Design) -> None:
         )  # dont save the pdb contnt here, we save that into a separate file
         df.to_json(jsonl_path, orient="records", lines=True, mode="a")
 
-        fasta_design_path = os.path.join(
-            DB_PATH, "designs", design.design_id + ".fasta"
-        )
-        with open(fasta_design_path, "w") as fasta_file:
-            fasta_file.write(f">{design.design_id}\n{design.sequence}\n")
-
+        os.makedirs(os.path.join(DB_PATH, "designs"), exist_ok=True)
         pdb_design_path = os.path.join(DB_PATH, "designs", design.design_id + ".pdb")
         with open(pdb_design_path, "w") as pdb_file:
             pdb_file.write(design.pdb)
+
+        # fasta_design_path = os.path.join(DB_PATH, "designs", design.design_id + ".fasta")
+        # with open(fasta_design_path, 'w') as fasta_file:
+        #     fasta_file.write(f">{design.design_id}\n{design.sequence}\n")
+
     finally:
         release_db_lock()
 
