@@ -5,6 +5,7 @@ import torch
 import Bio
 import shutil
 import numpy as np
+from io import StringIO
 
 from time import time
 from Bio import SeqIO
@@ -98,13 +99,12 @@ def fold_l_n(l, n=10, steps=None):
 
 
 def get_initinal_structure(
-    input_seq: str, model: EsmForProteinFolding, temp_dir: str, from_pdb: bool = False
+    input_seq: str, model: EsmForProteinFolding, from_pdb: bool = False
 ):
     """
     Get the original structure from the input FASTA file.
     Args:
         input_fasta (str): Path to the input FASTA file.
-        temp_dir (str): Temporary directory for storing intermediate files.
     Returns:
         Bio.PDB.Structure.Structure: The original protein structure.
     """
@@ -114,12 +114,9 @@ def get_initinal_structure(
     # output = model.output_to_pdb(output)[0]
     print("Original pLDDT:", output["mean_plddt"][0].item())
 
-    with open(os.path.join(temp_dir, "original.pdb"), "w") as f:
-        print(output_str, file=f)
-
     parser = PDBParser(QUIET=True)
     orig_struct = parser.get_structure(
-        "original", os.path.join(temp_dir, "original.pdb")
+        "original", StringIO(output_str)
     )
     return orig_struct
 
@@ -455,7 +452,6 @@ def run_distance_based_translation(
 def run_clustered_translation(
     model: EsmForProteinFolding,
     seq: str,
-    temp_dir: str,
     args: argparse.Namespace,
 ) -> tuple[str, float]:
     """
@@ -465,7 +461,6 @@ def run_clustered_translation(
     Args:
         model (EsmForProteinFolding): The ESMFold model.
         seq (str): The input protein sequence.
-        temp_dir (str): Temporary directory for storing intermediate files.
         distance_threshold (float): Distance threshold for selecting nearby residues (unit: angstrom).
     Returns:
         tuple: A tuple containing the final sequence and the final RMSD.
@@ -488,7 +483,7 @@ def run_clustered_translation(
     )
     orig_seq = seq
     if args.pdb_path is None:
-        orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
+        orig_struct = get_initinal_structure(orig_seq, model)
     else:
         parser = MMCIFParser(QUIET=True)
         orig_struct = parser.get_structure("original", args.pdb_path)
@@ -638,13 +633,13 @@ def run_clustered_translation(
             .cpu()[0, :, 1],
         )
         out_best_str = output_to_pdb(out_best, 0)
-        with open(os.path.join(temp_dir, f"{i}.pdb"), "w") as f:
-            f.write(out_best_str)
+        # with open(os.path.join(temp_dir, f"{i}.pdb"), "w") as f:
+        #     f.write(out_best_str)
 
-        if i == len(clusters) - 1:
-            shutil.copyfile(
-                os.path.join(temp_dir, f"{i}.pdb"), os.path.join(temp_dir, "final.pdb")
-            )
+        # if i == len(clusters) - 1:
+        #     shutil.copyfile(
+        #         os.path.join(temp_dir, f"{i}.pdb"), os.path.join(temp_dir, "final.pdb")
+        #     )
 
         print(f"Elapsed time: {time() - start_cluster:.02f}")
         print(f"pLDDT after step {i+1}: {out_best['mean_plddt'][0].item()}")
@@ -680,7 +675,6 @@ def run_clustered_translation(
 def run_clustered_translation_change_early(
     model: EsmForProteinFolding,
     seq: str,
-    temp_dir: str,
     distance_threshold: float = 5,
     beam_size: int = 5,
     batch_size: int = 100,
@@ -694,7 +688,6 @@ def run_clustered_translation_change_early(
     Args:
         model (EsmForProteinFolding): The ESMFold model.
         seq (str): The input protein sequence.
-        temp_dir (str): Temporary directory for storing intermediate files.
         distance_threshold (float): Distance threshold for selecting nearby residues (unit: angstrom).
     Returns:
         tuple: A tuple containing the final sequence and the final RMSD.
@@ -717,7 +710,7 @@ def run_clustered_translation_change_early(
     )
     orig_seq = seq
     if pdb_path is None:
-        orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
+        orig_struct = get_initinal_structure(orig_seq, model)
     else:
         parser = MMCIFParser(QUIET=True)
         orig_struct = parser.get_structure("original", pdb_path)
@@ -847,13 +840,13 @@ def run_clustered_translation_change_early(
             .cpu()[0, :, 1],
         )
         out_best_str = output_to_pdb(out_best, 0)
-        with open(os.path.join(temp_dir, f"{i}.pdb"), "w") as f:
-            f.write(out_best_str)
+        # with open(os.path.join(temp_dir, f"{i}.pdb"), "w") as f:
+        #     f.write(out_best_str)
 
-        if i == len(clusters) - 1:
-            shutil.copyfile(
-                os.path.join(temp_dir, f"{i}.pdb"), os.path.join(temp_dir, "final.pdb")
-            )
+        # if i == len(clusters) - 1:
+        #     shutil.copyfile(
+        #         os.path.join(temp_dir, f"{i}.pdb"), os.path.join(temp_dir, "final.pdb")
+        #     )
 
         print(f"Elapsed time: {time() - start_cluster:.02f}")
         print(f"pLDDT after step {i+1}: {out_best['mean_plddt'][0].item()}")
@@ -889,7 +882,7 @@ def run_clustered_translation_change_early(
 def main(args):
     orig_seq = str(SeqIO.read(args.input_fasta, "fasta").seq)
     model = (
-        EsmForProteinFolding.from_pretrained("../esmfold_v1")
+        EsmForProteinFolding.from_pretrained(args.esmfold_model_path)
         .eval()
         .to(args.device)
         .to(torch.float32 if args.fp32 else torch.bfloat16)
@@ -903,16 +896,11 @@ def main(args):
     print(f"Using device: {args.device}")
     print("Model loaded successfully.")
 
-    if args.temp_dir is None:
-        args.temp_dir = get_tmp_dir_name(args)
-
     for i in range(args.translations):
-        tmp_dir = args.temp_dir + f"/{args.random_seed + i}"
         print(f"Running translation {i+ 1} / {args.translations}")
         start_translation = time()
         np.random.seed(args.random_seed + i)
         args.current_seed = args.random_seed + i
-        os.makedirs(tmp_dir, exist_ok=True)
         if args.greedy:
             if args.wrt_pdb:
                 pdb_path = args.input_fasta.replace("_trimmed", "").replace(
@@ -921,7 +909,7 @@ def main(args):
             else:
                 pdb_path = None
             final_seq, final_rmsd = run_greedy_translation(
-                model, orig_seq, tmp_dir, pdb_path
+                model, orig_seq, pdb_path
             )
         elif args.cluster_beam:
             pdb_path = (
@@ -934,7 +922,6 @@ def main(args):
                 final_seq, final_rmsd = run_clustered_translation(
                     model,
                     orig_seq,
-                    tmp_dir,
                     args,
                 )
             else:
@@ -961,7 +948,6 @@ def main(args):
                 "Select a translation method, one of: [--greedy, --cluster_beam, --distance_based]"
             )
         print(f"Translation time: {time() - start_translation}")
-    # os.remove(args.temp_dir)
 
 
 if __name__ == "__main__":
@@ -969,7 +955,6 @@ if __name__ == "__main__":
         description="Translate protein sequences using ESMFold"
     )
     parser.add_argument("--input_fasta", "-i", type=str, required=True)
-    parser.add_argument("--temp_dir", "-t", type=str, default=None)
     parser.add_argument("--random_seed", "-r", type=int, default=42)
     parser.add_argument("--batch_size", "-b", type=int, default=100)
     parser.add_argument("--beam_size", "-w", type=int, default=5)
@@ -1025,6 +1010,12 @@ if __name__ == "__main__":
         type=str,
         default="com",
         help="Use C-beta coordinates for contact map or center of mass.",
+    )
+    parser.add_argument(
+        "--esmfold_model_path",
+        type=str,
+        default="facebook/esmfold_v1",
+        help="Path to the pretrained ESMFold model. Default downloads from HF hub (or loads from local cache), but can be replaced by local path.",
     )
     args = parser.parse_args()
     args.wrt_pdb = not args.wrt_esm
