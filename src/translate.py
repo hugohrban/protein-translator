@@ -1000,9 +1000,9 @@ if __name__ == "__main__":
         help="How many times to run the translation",
     )
     parser.add_argument(
-        "--wrt_pdb",
+        "--wrt_esm",
         action="store_true",
-        help="Optimize RMSD wrt PDB entry, rather than initial ESMfold prediction.",
+        help="Optimize RMSD wrt ESMfold prediction, rather than initial PDB entry.",
     )
     parser.add_argument(
         "--fp32",
@@ -1027,4 +1027,5 @@ if __name__ == "__main__":
         help="Use C-beta coordinates for contact map or center of mass.",
     )
     args = parser.parse_args()
+    args.wrt_pdb = not args.wrt_esm
     main(args)
