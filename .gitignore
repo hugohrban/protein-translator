@@ -4,5 +4,6 @@ auto_temps/
 pdb_downloads/
 esmfold_v1/
 venv/
+src/database/
 
 .DS_Store
