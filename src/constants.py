@@ -1,3 +1,5 @@
+import os
+
 ALL_AA = [
         "A",  # Alanine
         "C",  # Cysteine
@@ -33,8 +35,9 @@ EARLY_AA = [
         "T",  # Threonine
         "V",  # Valine
     ]
-
 # ALA+ASP+GLU+GLY+ILE+LEU+PRO+SER+THR+VAL
+# ADEGILPSTV
+
 
 IX_TO_EAA = { i: aa for i, aa in enumerate(EARLY_AA) }
 EAA_TO_IX = { aa: i for i, aa in enumerate(EARLY_AA) }
@@ -51,8 +54,8 @@ LATE_AA =[
         "W",  # Tryptophan
         "Y",  # Tyrosine
     ]
-
 # CYS+PHE+HIS+LYS+MET+ASN+GLN+ARG+TRP+TYR
+# CFHKMNQRWY
 
 IX_TO_LAA = { i: aa for i, aa in enumerate(LATE_AA) }
 LAA_TO_IX = { aa: i for i, aa in enumerate(LATE_AA) }
@@ -102,3 +105,5 @@ THREE_TO_ONE_AA = {
     "TYR": "Y",
     "VAL": "V",
 }
+
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "database"))

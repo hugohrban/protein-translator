@@ -17,11 +17,20 @@ from transformers.models.esm.modeling_esmfold import (
 from transformers.models.esm.openfold_utils import residue_constants, atom14_to_atom37
 
 
-from constants import ALL_AA, EARLY_AA, IX_TO_LAA, LAA_TO_IX, LATE_AA, THREE_TO_ONE_AA
+from constants import (
+    ALL_AA,
+    EARLY_AA,
+    IX_TO_LAA,
+    LAA_TO_IX,
+    LATE_AA,
+    THREE_TO_ONE_AA,
+    DB_PATH,
+)
 from utils import *
 from kabsch import kabsch_torch
 from itertools import product
 import random
+from uuid import uuid4
 
 
 @torch.no_grad()
@@ -118,6 +127,9 @@ def get_initinal_structure(
 def run_greedy_translation(
     model: EsmForProteinFolding, seq: str, temp_dir: str, pdb_path: str | None = None
 ) -> tuple[str, float]:
+    raise NotImplementedError(
+        "Greedy translation is deprecated. Please use other methods. You can uncomment this error - It works but there is no logging."
+    )
     orig_seq = seq
     if pdb_path is None:
         orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
@@ -312,6 +324,9 @@ def run_distance_based_translation(
     Returns:
         tuple: A tuple containing the final sequence and the final RMSD.
     """
+    raise NotImplementedError(
+        "Distance-based translation is deprecated. Please use other methods. You can uncomment this error - It works but there is no logging."
+    )
     orig_seq = seq
     orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
     orig_coords = torch.tensor(
@@ -455,6 +470,22 @@ def run_clustered_translation(
     Returns:
         tuple: A tuple containing the final sequence and the final RMSD.
     """
+    design = Design(
+        design_id=str(uuid4()),
+        reference_structure=(
+            os.path.abspath(args.pdb_path) if args.pdb_path else "ESMFold_prediction"
+        ),
+        optimization_reference="pdb" if args.pdb_path else "esm",
+        beam_size=args.beam_size,
+        optimize_plddt=args.optimize_plddt,
+        plddt_scaling_factor=args.plddt_scaling_factor,
+        distance_threshold=args.distance_threshold,
+        clustering_reference=args.dmap_reference,
+        clustering_proportion=args.clustering_proportion,
+        precision="fp32" if args.fp32 else "bf16",
+        mutate_early=False,
+        random_seed=args.current_seed,
+    )
     orig_seq = seq
     if args.pdb_path is None:
         orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
@@ -493,12 +524,22 @@ def run_clustered_translation(
         )
     )  # (L, 3) - C-alpha for all residues
 
-    # orig_coords_cb = torch.tensor(
-    #     np.array(
-    #         [atom.coord for atom in orig_struct.get_atoms() if (atom.get_full_id()[1] == 0 and atom.get_full_id()[2] == "A") and ((atom.get_name() == "CB") or (atom.get_name() == "CA" and atom.parent.get_resname() == "GLY"))]
-    #     )
-    # )   # (L, 3) - C-beta for all residues except Glycine, which uses C-alpha instead
-    # assert orig_coords_ca.shape[0] == orig_coords_cb.shape[0], "C-alpha and C-beta coordinates must have the same number of residues."
+    orig_coords_cb = torch.tensor(
+        np.array(
+            [
+                atom.coord
+                for atom in orig_struct.get_atoms()
+                if (atom.get_full_id()[1] == 0 and atom.get_full_id()[2] == "A")
+                and (
+                    (atom.get_name() == "CB")
+                    or (atom.get_name() == "CA" and atom.parent.get_resname() == "GLY")
+                )
+            ]
+        )
+    )  # (L, 3) - C-beta for all residues except Glycine, which uses C-alpha instead
+    assert (
+        orig_coords_ca.shape[0] == orig_coords_cb.shape[0]
+    ), "C-alpha and C-beta coordinates must have the same number of residues."
 
     orig_coords_com = torch.tensor(
         np.array(
@@ -615,6 +656,24 @@ def run_clustered_translation(
     print(seq)
     print(f"pLDDT final: {out_best['mean_plddt'][0].item()}")
     print(f"Final RMSD: {best_rmsd}")
+
+    design.sequence = seq
+    design.pdb = out_best_str
+    design.rmsd = best_rmsd.item()
+    design.plddt = out_best["mean_plddt"][0].item()
+    try:
+        if args.pdb_path:
+            design.tm_score = compute_tm_score(out_best_str, args.pdb_path)
+        else:
+            design.tm_score = 0.0
+    except Exception:
+        design.tm_score = 0.0
+
+    try:
+        design.save()
+    except Exception as e:
+        print(f"Failed to save design: {e}")
+
     return seq, best_rmsd
 
 
@@ -640,6 +699,22 @@ def run_clustered_translation_change_early(
     Returns:
         tuple: A tuple containing the final sequence and the final RMSD.
     """
+    design = Design(
+        design_id=str(uuid4()),
+        reference_structure=(
+            os.path.abspath(args.pdb_path) if args.pdb_path else "ESMFold_prediction"
+        ),
+        optimization_reference="pdb" if args.pdb_path else "esm",
+        beam_size=args.beam_size,
+        optimize_plddt=args.optimize_plddt,
+        plddt_scaling_factor=args.plddt_scaling_factor,
+        distance_threshold=args.distance_threshold,
+        clustering_reference=args.dmap_reference,
+        clustering_proportion=args.clustering_proportion,
+        precision="fp32" if args.fp32 else "bf16",
+        mutate_early=True,
+        random_seed=args.current_seed,
+    )
     orig_seq = seq
     if pdb_path is None:
         orig_struct = get_initinal_structure(orig_seq, model, temp_dir)
@@ -669,16 +744,24 @@ def run_clustered_translation_change_early(
             ]
         )
     )  # (L, 3) - C-alpha for all residues
+
     orig_coords_cb = torch.tensor(
         np.array(
             [
                 atom.coord
                 for atom in orig_struct.get_atoms()
-                if (atom.get_name() == "CB" and atom.parent.get_resname() != "GLY")
-                or (atom.get_name() == "CA" and atom.parent.get_resname() == "GLY")
+                if (atom.get_full_id()[1] == 0 and atom.get_full_id()[2] == "A")
+                and (
+                    (atom.get_name() == "CB")
+                    or (atom.get_name() == "CA" and atom.parent.get_resname() == "GLY")
+                )
             ]
         )
     )  # (L, 3) - C-beta for all residues except Glycine, which uses C-alpha instead
+    assert (
+        orig_coords_ca.shape[0] == orig_coords_cb.shape[0]
+    ), "C-alpha and C-beta coordinates must have the same number of residues."
+
     orig_coords_com = torch.tensor(
         np.array(
             [
@@ -690,7 +773,12 @@ def run_clustered_translation_change_early(
             ]
         )
     )  # (L, 3) # Center of mass for all residues
-    dist_map = (orig_coords_cb.unsqueeze(0) - orig_coords_cb.unsqueeze(1)).norm(
+    assert (
+        orig_coords_ca.shape[0] == orig_coords_com.shape[0]
+    ), "C-alpha and center of mass coordinates must have the same number of residues."
+
+    ref_coords = orig_coords_cb if args.dmap_reference == "cb" else orig_coords_com
+    dist_map = (ref_coords.unsqueeze(0) - ref_coords.unsqueeze(1)).norm(
         p=2, dim=-1
     )  # (L, L, 3) -> (L, L)
     clusters = boolean_clustering(
@@ -777,6 +865,24 @@ def run_clustered_translation_change_early(
     print(seq)
     print(f"pLDDT final: {out_best['mean_plddt'][0].item()}")
     print(f"Final RMSD: {best_rmsd}")
+
+    design.sequence = seq
+    design.pdb = out_best_str
+    design.rmsd = best_rmsd.item()
+    design.plddt = out_best["mean_plddt"][0].item()
+    try:
+        if args.pdb_path:
+            design.tm_score = compute_tm_score(out_best_str, args.pdb_path)
+        else:
+            design.tm_score = 0.0
+    except Exception:
+        design.tm_score = 0.0
+
+    try:
+        design.save()
+    except Exception as e:
+        print(f"Failed to save design: {e}")
+
     return seq, best_rmsd
 
 
@@ -805,6 +911,7 @@ def main(args):
         print(f"Running translation {i+ 1} / {args.translations}")
         start_translation = time()
         np.random.seed(args.random_seed + i)
+        args.current_seed = args.random_seed + i
         os.makedirs(tmp_dir, exist_ok=True)
         if args.greedy:
             if args.wrt_pdb:
@@ -861,54 +968,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Translate protein sequences using ESMFold"
     )
-    parser.add_argument(
-        "--input_fasta",
-        "-i",
-        type=str,
-        required=True,
-        help="Path to the input FASTA file with protein sequences.",
-    )
-    parser.add_argument(
-        "--temp_dir",
-        "-t",
-        type=str,
-        default=None,
-        help="Temporary directory for storing intermediate files. Default: None (will create a temporary directory with hyperparameters stored in the path name).",
-    )
+    parser.add_argument("--input_fasta", "-i", type=str, required=True)
+    parser.add_argument("--temp_dir", "-t", type=str, default=None)
     parser.add_argument("--random_seed", "-r", type=int, default=42)
-    parser.add_argument(
-        "--batch_size",
-        "-b",
-        type=int,
-        default=100,
-        help="Batch size for inference. Lower values reduce GPU memory usage. Default: 100.",
-    )
-    parser.add_argument(
-        "--beam_size",
-        "-w",
-        type=int,
-        default=5,
-        help="Beam size for clustered beam search translation. Default: 5.",
-    )
-    parser.add_argument(
-        "--clustering_proportion",
-        "-c",
-        type=float,
-        default=0.5,
-        help="During hierarchical clustering, merge two clusters when there is at least this ratio of links between them. Default: 0.5.",
-    )
-    parser.add_argument(
-        "--distance_threshold",
-        type=int,
-        default=7,
-        help="Distance threshold for clustering late amino acids (in Angstroms). Default: 7.",
-    )
-    parser.add_argument(
-        "--plddt_scaling_factor",
-        type=int,
-        default=5,
-        help="Weight of pLDDT in the final score. Only valid when `--optimize_plddt` is set. Default: 5.",
-    )
+    parser.add_argument("--batch_size", "-b", type=int, default=100)
+    parser.add_argument("--beam_size", "-w", type=int, default=5)
+    parser.add_argument("--clustering_proportion", "-c", type=float, default=0.5)
+    parser.add_argument("--distance_threshold", type=int, default=7)
+    parser.add_argument("--plddt_scaling_factor", type=int, default=5)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
         "--greedy",

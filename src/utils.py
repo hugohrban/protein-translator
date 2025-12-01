@@ -1,11 +1,15 @@
 import os
 import sys
+import re
 import torch
 import numpy as np
 import argparse
+import pandas as pd
+from dataclasses import dataclass
 from Bio.PDB import MMCIFParser, PDBParser
-from constants import ALL_AA, EARLY_AA, LATE_AA, THREE_TO_ONE_AA
+from constants import ALL_AA, EARLY_AA, LATE_AA, THREE_TO_ONE_AA, DB_PATH
 from transformers.models.esm.openfold_utils import atom14_to_atom37, OFProtein, to_pdb
+from time import sleep
 
 
 def get_num_early_aa(seq: str) -> int:
@@ -113,6 +117,45 @@ def round_list_of_lists(lists: list, decimals: int = 2) -> list:
         ["{:.02f}".format(round(value, decimals)) for value in sublist]
         for sublist in lists
     ]
+
+
+if __name__ == "__main__":
+    task = sys.argv[1]
+    assert task in ["stats", "seq_from_file", "get_plddt"]
+    if task == "stats":
+        seq = sys.argv[2]
+        c = get_num_late_aa(seq)
+        print(f"count_late = {c}")
+        ratio = get_ratio_late_aa(seq)
+        print(f"{len(seq)=}\nratio_late = {ratio}")
+    elif task == "seq_from_file":
+        filename = sys.argv[2]
+        seq_early_only, seq = get_seq_from_structure_file(filename)
+        print(seq_early_only)
+        print(seq)
+    elif task == "get_plddt":
+        from Bio.PDB import PDBParser, MMCIFParser
+
+        filename = sys.argv[2]
+        parser = (
+            PDBParser(QUIET=True)
+            if filename.endswith(".pdb")
+            else MMCIFParser(QUIET=True)
+        )
+        structure = parser.get_structure("protein", filename)
+        plddt = []
+        for atom in structure.get_atoms():
+            if atom.get_id() == "CA":
+                # pLDDT is stored in the b-factor field of the CA atom
+                plddt_value = atom.bfactor
+                plddt.append(plddt_value)
+        plddt = np.array(plddt)
+        plddt *= 100
+        print(np.mean(plddt), ",")
+        # print(f"Mean pLDDT: {np.mean(plddt):.2f}")
+        # print(f"Std pLDDT: {np.std(plddt):.2f}")
+        # print(f"Min pLDDT: {np.min(plddt):.2f}")
+        # print(f"Max pLDDT: {np.max(plddt):.2f}")
 
 
 def output_to_pdb(output: dict, index: int) -> str:
@@ -279,40 +322,157 @@ def get_tmp_dir_name(args: argparse.Namespace) -> str:
     return tmp_dir
 
 
-if __name__ == "__main__":
-    task = sys.argv[1]
-    assert task in ["stats", "seq_from_file", "get_plddt"]
-    if task == "stats":
-        seq = sys.argv[2]
-        c = get_num_late_aa(seq)
-        print(f"count_late = {c}")
-        ratio = get_ratio_late_aa(seq)
-        print(f"{len(seq)=}\nratio_late = {ratio}")
-    elif task == "seq_from_file":
-        filename = sys.argv[2]
-        seq_early_only, seq = get_seq_from_structure_file(filename)
-        print(seq_early_only)
-        print(seq)
-    elif task == "get_plddt":
-        from Bio.PDB import PDBParser, MMCIFParser
+def compute_tm_score(reference_str: str, design_path: str) -> float:
+    """
+    Compute TM-score between two protein structures using TMscore.
 
-        filename = sys.argv[2]
-        parser = (
-            PDBParser(QUIET=True)
-            if filename.endswith(".pdb")
-            else MMCIFParser(QUIET=True)
+    Args:
+        reference_str (str): String content of the reference structure file
+        design_path (str): Path to the design structure file
+
+    Returns:
+        float: TM-score between the two structures
+    """
+    import subprocess
+
+    from datetime import datetime
+
+    current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs("temp_refs", exist_ok=True)
+    reference_path = f"temp_refs/ref_{current_timestamp}.pdb"
+    with open(reference_path, "w") as f:
+        f.write(reference_str)
+
+    try:
+        result = subprocess.run(
+            ["TMalign", design_path, reference_path],
+            capture_output=True,
+            text=True,
+            check=True,
         )
-        structure = parser.get_structure("protein", filename)
-        plddt = []
-        for atom in structure.get_atoms():
-            if atom.get_id() == "CA":
-                # pLDDT is stored in the b-factor field of the CA atom
-                plddt_value = atom.bfactor
-                plddt.append(plddt_value)
-        plddt = np.array(plddt)
-        plddt *= 100
-        print(np.mean(plddt), ",")
-        # print(f"Mean pLDDT: {np.mean(plddt):.2f}")
-        # print(f"Std pLDDT: {np.std(plddt):.2f}")
-        # print(f"Min pLDDT: {np.min(plddt):.2f}")
-        # print(f"Max pLDDT: {np.max(plddt):.2f}")
+        os.remove(reference_path)  # Clean up temporary reference file
+
+        # Parse the output to extract TM-score
+        output_lines = result.stdout.split("\n")
+        for line in output_lines:
+            if line.startswith("TM-score="):
+                # Extract TM-score from line like "TM-score= 0.12345 (if normalized by length of Chain_1)"
+                tm_score_str = line.split()[1].strip()
+                return float(tm_score_str)
+
+        raise ValueError("TM-score not found in TMalign output")
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"TMalign command failed: {e.stderr}")
+    except FileNotFoundError:
+        raise RuntimeError(
+            "TMalign executable not found. Please ensure TMalign is installed and in PATH."
+        )
+    except (ValueError, IndexError) as e:
+        raise RuntimeError(f"Failed to parse TM-score from output: {e}")
+
+
+# Database
+
+
+@dataclass
+class Design:
+    # Params
+    design_id: str | None = (
+        None  # uuid4 - not checked for uniqueness, but should be fine
+    )
+    reference_structure: str | None = None  # path to reference
+    optimization_reference: str | None = None  # 'pdb' or 'esm'
+    beam_size: int | None = None
+    optimize_plddt: bool | None = None
+    plddt_scaling_factor: float | None = None
+    distance_threshold: float | None = None
+    clustering_reference: str | None = None  # 'cb' or 'com'
+    clustering_proportion: float | None = None
+    precision: str | None = None  # 'bf16' or 'fp32'
+    mutate_early: bool | None = None
+    random_seed: int | None = None
+
+    # Results
+    sequence: str | None = None  # translated sequence, only early AAs
+    pdb: str | None = None  # pdb content string, ESMFold prediction of the sequence
+    plddt: float | None = None  # plddt average across residues
+    rmsd: float | None = None
+    tm_score: float | None = None
+
+    def validate(self) -> bool:
+        """
+        Validate that all fields are properly set and string fields have allowed values.
+
+        Returns:
+            bool: True if all validations pass, False otherwise.
+        """
+        conditions = [
+            all(getattr(self, field) is not None for field in self.__annotations__),
+            self.optimization_reference in {"pdb", "esm"},
+            self.clustering_reference in {"cb", "com"},
+            self.precision in {"bf16", "fp32"},
+            0.0 <= self.clustering_proportion <= 1.0,
+            self.distance_threshold >= 0,
+            self.plddt_scaling_factor >= 0,
+            all(aa in EARLY_AA for aa in self.sequence),
+            0.0 <= self.plddt <= 1.0,
+            self.rmsd >= 0,
+            1.0 >= self.tm_score >= 0,
+        ]
+        # TODO printing which one failed
+        return all(conditions)
+
+    def save(self) -> None:
+        write_design_to_db(self)
+
+
+def write_design_to_db(design: Design) -> None:
+    """
+    Design has keys: design_id, sequence, plddt, pdb
+    """
+    if not design.validate():
+        raise ValueError("Design validation failed. Cannot write to database.")
+
+    acquire_db_lock()
+    try:
+        jsonl_path = os.path.join(DB_PATH, "designs.jsonl")
+        df = pd.DataFrame([design])
+        df.pop(
+            "pdb"
+        )  # dont save the pdb contnt here, we save that into a separate file
+        df.to_json(jsonl_path, orient="records", lines=True, mode="a")
+
+        fasta_design_path = os.path.join(
+            DB_PATH, "designs", design.design_id + ".fasta"
+        )
+        with open(fasta_design_path, "w") as fasta_file:
+            fasta_file.write(f">{design.design_id}\n{design.sequence}\n")
+
+        pdb_design_path = os.path.join(DB_PATH, "designs", design.design_id + ".pdb")
+        with open(pdb_design_path, "w") as pdb_file:
+            pdb_file.write(design.pdb)
+    finally:
+        release_db_lock()
+
+
+def acquire_db_lock() -> None:
+    MAX_TRIES = 100
+    SLEEP_TIME_SECONDS = 0.5
+    lock_file = os.path.join(DB_PATH, "DB_LOCK")
+    tries = 0
+    while os.path.exists(lock_file):
+        if tries >= MAX_TRIES:
+            raise TimeoutError(
+                "Could not acquire database lock after multiple attempts."
+            )
+        sleep(SLEEP_TIME_SECONDS)
+        tries += 1
+    with open(lock_file, "w") as f:
+        f.write("LOCKED")
+
+
+def release_db_lock() -> None:
+    lock_file = os.path.join(DB_PATH, "DB_LOCK")
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
