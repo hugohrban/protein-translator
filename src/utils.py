@@ -467,6 +467,7 @@ def write_design_to_db(design: Design) -> None:
     if not design.validate():
         raise ValueError("Design validation failed. Cannot write to database.")
 
+    os.makedirs(DB_PATH, exist_ok=True)
     acquire_db_lock()
     try:
         jsonl_path = os.path.join(DB_PATH, "designs.jsonl")
