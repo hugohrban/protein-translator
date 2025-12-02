@@ -182,7 +182,7 @@ def run_clustered_translation(
                     end="\r",
                 )
                 batch = [c[0] for c in candidates[j : j + args.batch_size]]
-                outputs_batch = infer(model, batch, num_recycles=0)
+                outputs_batch = infer(model, batch, num_recycles=0)     # TODO num_recycles could be parametrized, influences compute time
                 outputs_list.append(outputs_batch)
             print(" " * 100, end="\r")
 
@@ -478,11 +478,6 @@ def main(args):
         .to(torch.float32 if args.fp32 else torch.bfloat16)
     )
     print(model.dtype)
-
-    assert (
-        sum([args.greedy, args.cluster_beam, args.distance_based]) == 1
-    ), "Only one translation method can be used at a time."
-
     print(f"Using device: {args.device}")
     print("Model loaded successfully.")
 
@@ -491,23 +486,19 @@ def main(args):
         start_translation = time()
         np.random.seed(args.random_seed + i)
         args.current_seed = args.random_seed + i
+        
+        pdb_path = (
+            args.input_fasta.replace("_trimmed", "").replace(".fasta", ".cif")
+            if args.wrt_pdb
+            else None
+        )
+        args.pdb_path = pdb_path
+
         if args.greedy:
-            if args.wrt_pdb:
-                pdb_path = args.input_fasta.replace("_trimmed", "").replace(
-                    ".fasta", ".cif"
-                )
-            else:
-                pdb_path = None
             final_seq, final_rmsd = run_greedy_translation(
                 model, orig_seq, pdb_path
             )
-        elif args.cluster_beam:
-            pdb_path = (
-                args.input_fasta.replace("_trimmed", "").replace(".fasta", ".cif")
-                if args.wrt_pdb
-                else None
-            )
-            args.pdb_path = pdb_path
+        else:
             if not args.mutate_early:
                 final_seq, final_rmsd = run_clustered_translation(
                     model,
@@ -518,25 +509,13 @@ def main(args):
                 final_seq, final_rmsd = run_clustered_translation_change_early(
                     model,
                     orig_seq,
-                    tmp_dir,
                     distance_threshold=args.distance_threshold,
                     beam_size=args.beam_size,
                     batch_size=args.batch_size,
                     cluster_proportion=args.clustering_proportion,
                     pdb_path=pdb_path,
                 )
-        elif args.distance_based:
-            final_seq, final_rmsd = run_distance_based_translation(
-                model,
-                orig_seq,
-                tmp_dir,
-                batch_size=args.batch_size,
-                distance_threshold=7,
-            )
-        else:
-            raise ValueError(
-                "Select a translation method, one of: [--greedy, --cluster_beam, --distance_based]"
-            )
+    
         print(f"Translation time: {time() - start_translation}")
 
 
@@ -556,16 +535,6 @@ if __name__ == "__main__":
         "--greedy",
         action="store_true",
         help="Use greedy translation.",
-    )
-    parser.add_argument(
-        "--cluster_beam",
-        action="store_true",
-        help="Use clustered beam search translation.",
-    )
-    parser.add_argument(
-        "--distance_based",
-        action="store_true",
-        help="Use distance-based translation.",
     )
     parser.add_argument(
         "--translations",

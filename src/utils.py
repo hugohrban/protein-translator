@@ -552,6 +552,13 @@ class Design:
     rmsd: float | None = None
     tm_score: float | None = None
 
+    # metadata
+    timestamp: str | None = None  # timestamp of when design was created
+
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+
     def validate(self) -> bool:
         """
         Validate that all fields are properly set and string fields have allowed values.
