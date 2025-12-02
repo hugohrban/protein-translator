@@ -6,10 +6,19 @@ import numpy as np
 import argparse
 import pandas as pd
 from dataclasses import dataclass
+from time import time
+from transformers import EsmForProteinFolding
+from transformers.models.esm.modeling_esmfold import (
+    collate_dense_tensors,
+    EsmForProteinFoldingOutput,
+)
+from io import StringIO
+from itertools import product
+from transformers.models.esm.openfold_utils import residue_constants, atom14_to_atom37
 from Bio.PDB import MMCIFParser, PDBParser
 from constants import ALL_AA, EARLY_AA, LATE_AA, THREE_TO_ONE_AA, DB_PATH
 from transformers.models.esm.openfold_utils import atom14_to_atom37, OFProtein, to_pdb
-from time import sleep
+from time import sleep, time
 import subprocess
 from datetime import datetime
 
@@ -158,6 +167,141 @@ if __name__ == "__main__":
         # print(f"Std pLDDT: {np.std(plddt):.2f}")
         # print(f"Min pLDDT: {np.min(plddt):.2f}")
         # print(f"Max pLDDT: {np.max(plddt):.2f}")
+
+@torch.no_grad()
+def infer(
+    model: EsmForProteinFolding,
+    seqs: str | list[str],
+    position_ids=None,
+    num_recycles: int | None = None,
+) -> EsmForProteinFoldingOutput:
+    if isinstance(seqs, str):
+        lst = [seqs]
+    else:
+        lst = seqs
+    # Returns the raw outputs of the model given an input sequence.
+    model = model.eval()
+    device = next(model.parameters()).device
+    aatype = collate_dense_tensors(
+        [
+            torch.from_numpy(
+                residue_constants.sequence_to_onehot(
+                    sequence=seq,
+                    mapping=residue_constants.restype_order_with_x,
+                    map_unknown_to_x=True,
+                )
+            )
+            .to(device)
+            .argmax(dim=1)
+            for seq in lst
+        ]
+    )  # B=1 x L
+    mask = collate_dense_tensors([aatype.new_ones(len(seq)) for seq in lst])
+    position_ids = (
+        torch.arange(aatype.shape[1], device=device).expand(len(lst), -1)
+        if position_ids is None
+        else position_ids.to(device)
+    )
+    if position_ids.ndim == 1:
+        position_ids = position_ids.unsqueeze(0)
+    output = model(
+        aatype,
+        mask,
+        position_ids=position_ids,
+        num_recycles=num_recycles,
+    )
+    output["mean_plddt"] = (output["plddt"] * output["atom37_atom_exists"]).sum(
+        dim=(1, 2)
+    ) / output["atom37_atom_exists"].sum(dim=(1, 2))
+    return output
+
+
+# def fold_l_n(l, n=10, steps=None):
+#     """
+#     measure time to fold n seqs of length l
+#     """
+#     start = time()
+#     seqs = ["G" * l] * n
+#     outputs = infer(model, seqs, num_recycles=0)
+#     end = time()
+#     print("Per seq", (end - start) / n)
+#     print("Per step", (end - start))
+#     print("Total translation", (end - start) * steps if steps else "N/A")
+
+# model = EsmForProteinFolding.from_pretrained("../esmfold_v1").eval().to("cuda:0")
+
+
+def get_initinal_structure(
+    input_seq: str, model: EsmForProteinFolding, from_pdb: bool = False
+):
+    """
+    Get the original structure from the input FASTA file.
+    Args:
+        input_fasta (str): Path to the input FASTA file.
+    Returns:
+        Bio.PDB.Structure.Structure: The original protein structure.
+    """
+    # with torch.amp.autocast("cuda"):
+    output = infer(model, input_seq, num_recycles=0)
+    output_str = output_to_pdb(output, 0)
+    # output = model.output_to_pdb(output)[0]
+    print("Original pLDDT:", output["mean_plddt"][0].item())
+
+    parser = PDBParser(QUIET=True)
+    orig_struct = parser.get_structure(
+        "original", StringIO(output_str)
+    )
+    return orig_struct
+
+
+# distance based translation utils
+
+
+def find_nearby_late_residues(
+    mutation_ix: int,
+    orig_coords: torch.Tensor,
+    seq: str,
+    distance_threshold: float,
+    num_closest: int = 3,
+) -> list[int]:
+    """
+    Find late residues that are within a certain distance threshold from the selected late amino acid. If there are more than `num_closest`, return the top `num_closest`.
+    Args:
+        mutation_ix (int): The index of the selected late amino acid.
+        orig_coords (torch.Tensor): The coordinates of the original structure., shape: (Length x 3)
+        seq (str): The input protein sequence.
+        distance_threshold (float): Distance threshold for selecting nearby residues (unit: angstrom).
+        num_closest (int): The number of closest residues to return. Default: 3.
+    Returns:
+        list: A list of indices of nearby residues.
+    """
+    mutation_coord = orig_coords[mutation_ix]
+    dists = torch.norm(orig_coords - mutation_coord, dim=1)
+    sorted_ixs = torch.argsort(dists)
+    i = 0
+    nearby_late_residues = []
+    while len(nearby_late_residues) < num_closest and i < orig_coords.shape[0]:
+        if dists[sorted_ixs[i]] <= distance_threshold:
+            if seq[sorted_ixs[i]] in LATE_AA:
+                nearby_late_residues.append(sorted_ixs[i].item())
+        else:
+            break
+        i += 1
+    return nearby_late_residues
+
+
+def get_mutated_seqs(late_residues: list[int], seq: str):
+    # do all combinations ( num_late_res ** 10 )
+    if len(late_residues) <= 3:
+        mutated_seqs = []
+        for eaas in product(EARLY_AA, repeat=len(late_residues)):
+            mutated_seq = list(seq)
+            for i, eaa in zip(late_residues, eaas):
+                mutated_seq[i] = eaa
+            mutated_seqs.append("".join(mutated_seq))
+        return mutated_seqs
+    else:
+        raise NotImplementedError()
 
 
 def output_to_pdb(output: dict, index: int) -> str:
