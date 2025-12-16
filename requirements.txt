@@ -3,3 +3,5 @@ biopython==1.83
 torch==2.4.1
 transformers==4.45.1
 pandas==2.3.3
+streamlit>=1.28.0
+plotly>=5.17.0
