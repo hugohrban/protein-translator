@@ -144,7 +144,7 @@ try:
     # Show selected design IDs with 60% width
     col_plot, col_spacer = st.columns([0.6, 0.4])
     with col_plot:
-        selection = st.plotly_chart(fig, use_container_width=True, key='plot', on_select='rerun')
+        selection = st.plotly_chart(fig, width='stretch', key='plot', on_select='rerun')
     
     if selection and 'selection' in selection and 'points' in selection['selection']:
         selected_indices = [point['point_index'] for point in selection['selection']['points']]
@@ -154,7 +154,7 @@ try:
             
             # Display selected design IDs
             selected_df = df_filtered.iloc[selected_indices][['design_id', "rmsd", "plddt", "tm_score"]]
-            st.dataframe(selected_df, use_container_width=True)
+            st.dataframe(selected_df, width='stretch')
             
             # Button to copy IDs
             ids_string = ' '.join(df_filtered.iloc[selected_indices]['design_id'].tolist())
@@ -164,7 +164,7 @@ try:
             with col2:
                 st.write("")
                 st.write("")
-                if st.button("📋 Copy IDs", use_container_width=True):
+                if st.button("📋 Copy IDs", width='stretch'):
                     st.code(ids_string, language=None)
                     st.success("IDs displayed above - copy from the code block!")
             
@@ -210,7 +210,7 @@ try:
     display_cols = ['design_id', 'plddt', 'rmsd', 'tm_score', 'beam_size', 
                     'plddt_scaling_factor', 'distance_threshold']
     display_cols = [col for col in display_cols if col in df_filtered.columns]
-    st.dataframe(df_filtered[display_cols], use_container_width=True, height=300)
+    st.dataframe(df_filtered[display_cols], width='stretch', height=300)
     
 except FileNotFoundError:
     st.error(f"❌ Could not find designs file at: {designs_path}")
