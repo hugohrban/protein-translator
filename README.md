@@ -79,3 +79,7 @@ Generated designs are stored in `database/designs` as `.pdb` files. Their filena
 - `random_seed`: Random seed for reproducibility.
 
 `database/DB_LOCK` is a lock file to ensure only one process is writing to the database at a time. It either contains `LOCKED` or is empty.
+
+### Design Explorer
+
+Visualize and explore your generated designs interactively using the Design Explorer Streamlit app. Run it with `streamlit run src/design_explorer.py` from the project root. The app allows you to create scatter plots of any design metrics (pLDDT, RMSD, TM-score, etc.), filter designs by axis ranges, and select multiple designs for detailed inspection. You can view full hyperparameters for selected designs and open their structures directly in PyMOL with a single click. All designs from `database/designs.jsonl` are automatically loaded and visualized.
